@@ -1,0 +1,58 @@
+#!/usr/bin/with-contenv bash
+
+set -e;
+
+BUILDBOT_HOME="${BUILDBOT_HOME:-/home/alpine/buildbot-config}"
+ROLE="${ROLE:-master}";
+WORKERNAME="${WORKERNAME:-buildbot}";
+COMMON_FLAGS="${COMMON_FLAGS:- --force --log-count=2 --log-size=5000 --relocatable}";
+
+
+mkdir -p ${BUILDBOT_HOME};
+
+cd ${BUILDBOT_HOME} || exit 1;
+chown -R alpine ${BUILDBOT_HOME};
+
+# install packages
+[[ -n "${REQUIRED_APK}" ]] && (
+    apk add -uU --virtual .run-dependencies ${REQUIRED_APK}
+) || echo " No apks to install.";
+
+# install pip packages
+[[ -n "${REQUIRED_PIP}" ]] &&  (
+    pip install --no-cache --upgrade ${REQUIRED_PIP}
+) || echo " No pip packages to install.";
+
+if [ "${ROLE}" = "master" ];
+then
+    [[ -d "${WORKERNAME}-master" ]] && (
+        echo "Found master";
+    ) || (
+        echo "Creating master";
+        s6-setuidgid alpine buildbot create-master ${COMMON_FLAGS} "${WORKERNAME}-master";
+        s6-setuidgid alpine cp "${WORKERNAME}-master/master.cfg.sample" "${WORKERNAME}-master/master.cfg";
+        sed -i \
+            -e "s/example-worker/${WORKERNAME}/g" \
+            -e "s/\"pass\"/\"${PASSWORD}\"/g" \
+            "${WORKERNAME}-master/master.cfg";
+    );
+    mv /etc/services.d/worker /defaults/; # dont start service
+
+elif [ "${ROLE}" = "worker" ];
+then
+    [[ -d "${WORKERNAME}-worker" ]] && (
+        echo "Found worker";
+    ) || (
+        echo "Creating worker";
+        s6-setuidgid alpine buildbot-worker create-worker ${COMMON_FLAGS} --keepalive 180 "${WORKERNAME}-worker" ${MASTERADDRESS} ${WORKERNAME} ${PASSWORD};
+    );
+    mv /etc/services.d/master /defaults/; # dont start service
+
+else
+    mv /etc/services.d/worker /defaults/; # dont start service
+    mv /etc/services.d/master /defaults/; # dont start service
+    echo "Nothing to do";
+fi;
+
+
+

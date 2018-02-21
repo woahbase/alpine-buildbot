@@ -1,0 +1,8 @@
+#!/usr/bin/with-contenv bash
+
+# cd /home/alpine/buildbot-config || exit 1;
+# s6-setuidgid alpine buildbot-worker start --nodaemon ${WORKERNAME}-worker;
+
+cd /home/alpine/buildbot-config/${WORKERNAME}-worker || exit 1;
+s6-setuidgid alpine twistd --nodaemon --no_save -y ./buildbot.tac;
+
