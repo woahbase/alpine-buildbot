@@ -10,7 +10,7 @@ ROLE          := master# master / worker
 
 DOCKERSRC     := $(OPSYS)-python3#
 DOCKEREPO     := $(OPSYS)-$(SVCNAME)
-IMAGETAG      := $(USERNAME)/build$(ROLE):$(ARCH)
+IMAGETAG      := $(USERNAME)/alpine-build$(ROLE):$(ARCH)
 
 WORKERNAME    := $(shell cat /etc/hostname)
 
