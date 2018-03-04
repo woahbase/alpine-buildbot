@@ -374,7 +374,7 @@ Maintained by [WOAHBase][204].
 [238]: https://microbadger.com/images/woahbase/alpine-buildworker:armhf
 [239]: https://hub.docker.com/r/woahbase/alpine-buildworker
 
-[251]: https://travis-ci.org/woahbase/alpine-buildmaster.svg?branch=master
+[251]: https://travis-ci.org/woahbase/alpine-buildbot.svg?branch=master
 
 [255]: https://images.microbadger.com/badges/commit/woahbase/alpine-buildmaster.svg
 
