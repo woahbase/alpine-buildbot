@@ -4,6 +4,7 @@ ARG IMAGEBASE=frommakefile
 #
 FROM ${IMAGEBASE}
 #
+ARG VERSION=3.11.9
 ARG BUILDBOT_ROLE=master
 # no need to specify role in containers, master/worker role is
 # determined based on which image is run
@@ -56,7 +57,7 @@ RUN set -xe \
             libpq-dev \
         \
         && pip install --no-cache-dir --break-system-packages \
-            buildbot[bundle,tls] \
+            buildbot[bundle,tls]==${VERSION} \
             PyMySQL \
             # for http/misc
             requests \
@@ -90,7 +91,7 @@ RUN set -xe \
         # \
         && pip install --no-cache-dir --break-system-packages \
             twisted[tls] \
-            buildbot-worker \
+            buildbot-worker==${VERSION} \
             requests\
         \
         # && apk del --purge .build-dependencies-worker; \
