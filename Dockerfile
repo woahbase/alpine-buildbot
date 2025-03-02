@@ -44,6 +44,7 @@ RUN set -xe \
             py3-cairo \
             # for posgres db
             libpq \
+            py3-pillow \
             py3-psycopg2 \
             # for pass-based secrets
             pass \
@@ -54,6 +55,7 @@ RUN set -xe \
             # # for generating PNG badges
             # cairo-dev \
             glib-dev \
+            libjpeg-turbo-dev \
             libpq-dev \
         \
         && pip install --no-cache-dir --break-system-packages \
