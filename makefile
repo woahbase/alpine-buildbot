@@ -1,7 +1,7 @@
 # {{{ -- meta
 OPSYS     := alpine
 ROLE      := master# master / worker
-SVCNAME   ?= build$(ROLE)
+SVCNAME   := build$(ROLE)
 SRCIMAGE  := python3
 
 ifndef ORGNAME # ensure ORGNAME in env is prioritised over default
