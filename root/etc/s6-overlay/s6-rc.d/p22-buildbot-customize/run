@@ -1,0 +1,13 @@
+#!/usr/bin/with-contenv bash
+set -e
+
+vecho () { if [ "${S6_VERBOSITY:-1}" -gt 0  ]; then echo "[$0] $@"; fi; }
+
+# replace this file with custom pre-tasks script
+
+if [ -n "${BUILDBOT_SKIP_SETUP}" ] || [ -n "${BUILDBOT_SKIP_CUSTOMIZE}" ]; then exit 0; fi;
+
+BUILDBOT_HOME="${BUILDBOT_HOME:-/home/alpine/buildbot}"
+BUILDBOT_PROJECTNAME="${BUILDBOT_PROJECTNAME:-buildbot}";
+
+vecho "Nothing to customize for ${BUILDBOT_PROJECTNAME}.";

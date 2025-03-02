@@ -1,0 +1,110 @@
+#!/usr/bin/with-contenv bash
+set -e
+
+vecho () { if [ "${S6_VERBOSITY:-1}" -gt 0  ]; then echo "[$0] $@"; fi; }
+
+# role is preset in envs in the respective images
+# no need to specify role in containers
+# BUILDBOT_ROLE="${BUILDBOT_ROLE:-worker}";
+if [ "${BUILDBOT_ROLE^^}" != "WORKER" ] || [ -n "${BUILDBOT_SKIP_SETUP}" ]; then exit 0; fi; # run only for worker
+
+BUILDBOT_HOME="${BUILDBOT_HOME:-/home/alpine/buildbot}"
+BUILDBOT_PROJECTNAME="${BUILDBOT_PROJECTNAME:-buildbot}";
+BUILDBOT_SETUP_ARGS="${BUILDBOT_SETUP_ARGS:- --force --log-count=2 --log-size=5000 --relocatable}";
+BUILDBOT_MASTERADDRESS="${BUILDBOT_MASTERADDRESS:-localhost}";
+BUILDBOT_MASTERPORT="${BUILDBOT_MASTERPORT:-9989}";
+BUILDBOT_WORKERNAME="${BUILDBOT_WORKERNAME:-${BUILDBOT_PROJECTNAME}-worker}";
+BUILDBOT_WORKERPASS="${BUILDBOT_WORKERPASS:-insecurebydefault}";
+
+BUILDBOT_CUSTOM_TACFILE="${BUILDBOT_CUSTOM_TACFILE:-/defaults/worker.tac}";
+# BUILDBOT_USE_CUSTOM_TACFILE="${BUILDBOT_USE_CUSTOM_TACFILE:-false}"; # unset by default
+
+# set worker info files from envvars
+BUILDBOT_WORKERINFO_ADMIN="${BUILDBOT_WORKERINFO_ADMIN:-docker}";
+BUILDBOT_WORKERINFO_HOST="${BUILDBOT_WORKERINFO_HOST:-$HOSTNAME}";
+BUILDBOT_WORKERINFO_ACCESSURI="${BUILDBOT_WORKERINFO_ACCESSURI:-ssh://$HOSTNAME}";
+
+mkdir -p ${BUILDBOT_HOME};
+
+# fix permissions
+if [ -z "${BUILDBOT_SKIP_PERMFIX}" ]; # may set to 'true' for if configurations are mounted read-only
+then
+    vecho "Fixing permissions.";
+    find "${BUILDBOT_HOME}" \
+        \! -user ${S6_USER:-alpine} -exec \
+        chown --no-dereference \
+        ${S6_USER:-alpine}:${PGID:-1000} \
+        '{}' +;
+fi;
+
+cd ${BUILDBOT_HOME} || exit 1;
+
+# buildworker service is run as a non-root user ${S6_USER:-alpine}
+# any files/directories we create should be made accessible to it
+
+if [ -f "${BUILDBOT_WORKERNAME}/buildbot.tac" ];
+then
+    vecho "Found worker tacfile: ${BUILDBOT_WORKERNAME}/buildbot.tac";
+else
+    # use custom tacfile, enables stdout logging for docker
+    if [ -n "${BUILDBOT_USE_CUSTOM_TACFILE}" ] \
+    && [ -f "${BUILDBOT_CUSTOM_TACFILE}" ];
+    then
+        vecho "Using custom tacfile for: ${BUILDBOT_WORKERNAME}";
+        vecho "The required parameters / environment variables must be set.";
+        vecho "See ${BUILDBOT_CUSTOM_TACFILE}";
+        s6-setuidgid ${S6_USER:-alpine} \
+            mkdir -p "${BUILDBOT_WORKERNAME}";
+        s6-setuidgid ${S6_USER:-alpine} \
+            cp "${BUILDBOT_CUSTOM_TACFILE}" "${BUILDBOT_WORKERNAME}/buildbot.tac" \
+        && s6-setuidgid ${S6_USER:-alpine} \
+            chmod 600 "${BUILDBOT_WORKERNAME}/buildbot.tac";
+    else
+        vecho "Creating worker: ${BUILDBOT_WORKERNAME} for master: ${BUILDBOT_MASTERADDRESS}:${BUILDBOT_MASTERPORT}";
+        s6-setuidgid ${S6_USER:-alpine} \
+            buildbot-worker create-worker \
+                ${BUILDBOT_SETUP_ARGS} \
+                --keepalive  ${BUILDBOT_WORKER_KEEPALIVE:-180} \
+                --maxdelay   ${BUILDBOT_WORKER_MAXDELAY:-180} \
+                --maxretries ${BUILDBOT_WORKER_MAXRETRIES:-5} \
+                "${BUILDBOT_WORKERNAME}" \
+                "${BUILDBOT_MASTERADDRESS}:${BUILDBOT_MASTERPORT}" \
+                "${BUILDBOT_WORKERNAME}" \
+                "${BUILDBOT_WORKERPASS}" \
+        || exit 1;
+    fi;
+fi;
+
+# ensure worker info dir/files
+s6-setuidgid ${S6_USER:-alpine} \
+    mkdir -p ${BUILDBOT_WORKERNAME}/info;
+
+if [ -n "${BUILDBOT_WORKERINFO_ADMIN}" ] \
+&& [ ! -f "${BUILDBOT_WORKERNAME}/info/admin" ] \
+|| [ "${BUILDBOT_WORKERINFO_ADMIN}" != "$(cat ${BUILDBOT_WORKERNAME}/info/admin)" ];
+then
+    vecho "Setting worker info: ${BUILDBOT_WORKERNAME}/info/admin: ${BUILDBOT_WORKERINFO_ADMIN}";
+    s6-setuidgid ${S6_USER:-alpine} \
+        echo "${BUILDBOT_WORKERINFO_ADMIN}" \
+        > ${BUILDBOT_WORKERNAME}/info/admin;
+fi;
+
+if [ -n "${BUILDBOT_WORKERINFO_HOST}" ] \
+&& [ ! -f "${BUILDBOT_WORKERNAME}/info/host" ] \
+|| [ "${BUILDBOT_WORKERINFO_HOST}" != "$(cat ${BUILDBOT_WORKERNAME}/info/host)" ];
+then
+    vecho "Setting worker info: ${BUILDBOT_WORKERNAME}/info/host: ${BUILDBOT_WORKERINFO_HOST}";
+    s6-setuidgid ${S6_USER:-alpine} \
+        echo "${BUILDBOT_WORKERINFO_HOST}" \
+        > ${BUILDBOT_WORKERNAME}/info/host;
+fi;
+
+if [ -n "${BUILDBOT_WORKERINFO_ACCESSURI}" ] \
+&& [ ! -f "${BUILDBOT_WORKERNAME}/info/access_uri" ] \
+|| [ "${BUILDBOT_WORKERINFO_ACCESSURI}" != "$(cat ${BUILDBOT_WORKERNAME}/info/access_uri)" ];
+then
+    vecho "Setting worker info: ${BUILDBOT_WORKERNAME}/info/access_uri: ${BUILDBOT_WORKERINFO_ACCESSURI}";
+    s6-setuidgid ${S6_USER:-alpine} \
+        echo "${BUILDBOT_WORKERINFO_ACCESSURI}" \
+        > ${BUILDBOT_WORKERNAME}/info/access_uri;
+fi;

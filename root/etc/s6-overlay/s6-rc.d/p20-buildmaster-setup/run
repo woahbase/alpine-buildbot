@@ -1,0 +1,234 @@
+#!/usr/bin/with-contenv bash
+set -e
+
+vecho () { if [ "${S6_VERBOSITY:-1}" -gt 0  ]; then echo "[$0] $@"; fi; }
+
+# role is preset in envs in the respective images
+# no need to specify role in containers
+# BUILDBOT_ROLE="${BUILDBOT_ROLE:-master}";
+if [ "${BUILDBOT_ROLE^^}" != "MASTER" ] || [ -n "${BUILDBOT_SKIP_SETUP}" ]; then exit 0; fi; # run only for master
+
+BUILDBOT_HOME="${BUILDBOT_HOME:-/home/alpine/buildbot}";
+BUILDBOT_PROJECTNAME="${BUILDBOT_PROJECTNAME:-buildbot}";
+BUILDBOT_SETUP_ARGS="${BUILDBOT_SETUP_ARGS:- --force --log-count=2 --log-size=5000 --relocatable}";
+BUILDBOT_MASTERNAME="${BUILDBOT_MASTERNAME:-${BUILDBOT_PROJECTNAME}-master}";
+BUILDBOT_MASTERCFG="${BUILDBOT_MASTERCFG:-${BUILDBOT_MASTERNAME}/master.cfg.sample}";
+
+BUILDBOT_CUSTOM_TACFILE="${BUILDBOT_CUSTOM_TACFILE:-/defaults/master.tac}";
+# BUILDBOT_USE_CUSTOM_TACFILE="${BUILDBOT_USE_CUSTOM_TACFILE:-false}"; # unset by default
+
+# use custom configurations from remote sources
+# BUILDBOT_CONFIG_URL="${BUILDBOT_CONFIG_URL}"; # unset by default, set to enable
+BUILDBOT_CONFIG_DIR="${BUILDBOT_CONFIG_DIR:-$BUILDBOT_HOME/config}"; # preferably outside of $BUILDBOT_BASEDIR so we don't accidentally modify
+BUILDBOT_CONFIG_TMP="${BUILDBOT_CONFIG_TMP:-$BUILDBOT_HOME/.tmp}"; # temporary storage for downloaded files, should not be left dirty
+BUILDBOT_CONFIG_CFGFILE="${BUILDBOT_CONFIG_CFGFILE:-master.cfg}";
+# path to cfgfile relative to ${BUILDBOT_CONFIG_DIR}
+# default expects at root of downloaded/unpacked configurations
+BUILDBOT_CONFIG_TACFILE="${BUILDBOT_CONFIG_TACFILE:-buildbot.tac}";
+# path to tacfile relative to ${BUILDBOT_CONFIG_DIR}
+# default expects at root of downloaded/unpacked configurations
+
+mkdir -p ${BUILDBOT_HOME};
+
+# fix permissions
+if [ -z "${BUILDBOT_SKIP_PERMFIX}" ]; # may set to 'true' for if configurations are mounted read-only
+then
+    vecho "Fixing permissions.";
+    find "${BUILDBOT_HOME}" \
+        \! -user ${S6_USER:-alpine} -exec \
+        chown --no-dereference \
+        ${S6_USER:-alpine}:${PGID:-1000} \
+        '{}' +;
+fi;
+
+cd ${BUILDBOT_HOME} || exit 1;
+
+# buildmaster service is run as a non-root user ${S6_USER:-alpine}
+# any files/directories we create should be made accessible to it
+
+if [ -n "${BUILDBOT_CONFIG_URL}" ];
+then
+    mkdir -p \
+        "${BUILDBOT_CONFIG_DIR}" \
+        "${BUILDBOT_CONFIG_TMP}" \
+    \
+    && chown ${S6_USER:-alpine}:${PGID:-1000} \
+        "${BUILDBOT_CONFIG_DIR}" \
+        "${BUILDBOT_CONFIG_TMP}" \
+    ;
+
+    if [ $(find "${BUILDBOT_CONFIG_DIR}" -type f | wc -l) -gt 0 ];
+    then
+        vecho "Config dir ${BUILDBOT_CONFIG_DIR} is expected to be empty.";
+        vecho "But it seems to already contains some files which WE WON'T RISK CHANGING.";
+        vecho "Consider changing \$BUILDBOT_CONFIG_DIR to a different directory.";
+        exit 1;
+
+    elif echo "${BUILDBOT_CONFIG_URL}" | grep -q '.tar.gz$' >/dev/null;
+    then
+        vecho "Downloading ${BUILDBOT_CONFIG_URL} to ${BUILDBOT_CONFIG_TMP}/config.tar.gz";
+        # file downloaded as root user
+        until \
+            curl -o "${BUILDBOT_CONFIG_TMP}/config.tar.gz" -sL "${BUILDBOT_CONFIG_URL}";
+        do
+            vecho "Can't download from \$BUILDBOT_CONFIG_URL: ${BUILDBOT_CONFIG_URL}";
+            sleep 1;
+            vecho "Retrying...";
+        done;
+        vecho "Unpacking ${BUILDBOT_CONFIG_TMP}/config.tar.gz...";
+        # unpacked as ${S6_USER}
+        # then deleted as root user
+        s6-setuidgid ${S6_USER:-alpine} \
+            tar -xz \
+            --strip-components=1 \
+            --directory="${BUILDBOT_CONFIG_DIR}" \
+            -f "${BUILDBOT_CONFIG_TMP}/config.tar.gz" \
+        && rm -f "${BUILDBOT_CONFIG_TMP}/config.tar.gz";
+        vecho "Done.";
+
+    elif echo "${BUILDBOT_CONFIG_URL}" | grep -q '.git$' >/dev/null; # must end with .git
+    then # may require sshkeys setup prior to cloning
+        vecho "Cloning ${BUILDBOT_CONFIG_URL}...";
+        HOME=${S6_USERHOME:-/home/alpine} \
+        s6-setuidgid ${S6_USER:-alpine} \
+            git clone \
+                --branch ${BUILDBOT_CONFIG_BRANCH:-master} \
+                --depth 1 \
+                --recurse-submodules \
+                --shallow-submodules \
+                ${BUILDBOT_CONFIG_URL} ${BUILDBOT_CONFIG_DIR};
+        vecho "Done.";
+
+    # elif echo "$BUILDBOT_CONFIG_URL" | grep -q '.zip$' >/dev/null; # TODO: unzip and setup
+    # then
+
+    elif echo "${BUILDBOT_CONFIG_URL}" | grep -q '.cfg$' >/dev/null;
+    then
+        vecho "Downloading ${BUILDBOT_CONFIG_URL} to ${BUILDBOT_CONFIG_TMP}/master.cfg";
+        until \
+            s6-setuidgid ${S6_USER:-alpine} \
+            curl -o "${BUILDBOT_CONFIG_TMP}/master.cfg" -sL "${BUILDBOT_CONFIG_URL}";
+        do
+            vecho "Can't download from \$BUILDBOT_CONFIG_URL: ${BUILDBOT_CONFIG_URL}";
+            sleep 1;
+            vecho "Retrying...";
+        done;
+        s6-setuidgid ${S6_USER:-alpine} \
+            mv "${BUILDBOT_CONFIG_TMP}/master.cfg" "${BUILDBOT_CONFIG_DIR}/${BUILDBOT_CONFIG_CFGFILE}";
+        vecho "Done.";
+    fi;
+
+    if [ -f "${BUILDBOT_CONFIG_DIR}/${BUILDBOT_CONFIG_CFGFILE}" ];
+    then
+        # mkdir -p ${BUILDBOT_HOME}/${BUILDBOT_MASTERNAME};
+        # cp ${BUILDBOT_CONFIG_DIR}/${BUILDBOT_CONFIG_CFGFILE} ${BUILDBOT_HOME}/${BUILDBOT_MASTERNAME}/master.cfg;
+        BUILDBOT_MASTERCFG="${BUILDBOT_CONFIG_DIR}/${BUILDBOT_CONFIG_CFGFILE}";
+        vecho "Updated master.cfg source: ${BUILDBOT_MASTERCFG}";
+    fi;
+    if [ -f "${BUILDBOT_CONFIG_DIR}/${BUILDBOT_CONFIG_TACFILE}" ];
+    then
+        # mkdir -p ${BUILDBOT_HOME}/${BUILDBOT_MASTERNAME};
+        # cp ${BUILDBOT_CONFIG_DIR}/${BUILDBOT_CONFIG_TACFILE} ${BUILDBOT_HOME}/${BUILDBOT_MASTERNAME}/buildbot.tac;
+        BUILDBOT_CUSTOM_TACFILE="${BUILDBOT_CONFIG_DIR}/${BUILDBOT_CONFIG_TACFILE}";
+        vecho "Updated custom tacfile source: ${BUILDBOT_CUSTOM_TACFILE}";
+        BUILDBOT_USE_CUSTOM_TACFILE=1; # force enable custom tacfile copying
+        vecho "Set custom tacfile use: ${BUILDBOT_USE_CUSTOM_TACFILE}";
+    fi;
+fi;
+
+if [ -f "${BUILDBOT_MASTERNAME}/buildbot.tac" ];
+then
+    vecho "Found master tacfile: ${BUILDBOT_MASTERNAME}/buildbot.tac";
+else
+    vecho "Creating master: ${BUILDBOT_MASTERNAME}";
+    s6-setuidgid ${S6_USER:-alpine} \
+        buildbot create-master \
+        ${BUILDBOT_SETUP_ARGS} \
+        "${BUILDBOT_MASTERNAME}" \
+    && s6-setuidgid ${S6_USER:-alpine} \
+        cp "${BUILDBOT_MASTERCFG}" "${BUILDBOT_MASTERNAME}/master.cfg" \
+    || exit 1;
+
+    # only when mastercfg is the default sample cfg
+    # update default worker/pass in master.cfg
+    if [ "$(readlink -f ${BUILDBOT_MASTERCFG})" = "$(readlink -f ${BUILDBOT_MASTERNAME}/master.cfg.sample)" ];
+    then
+        WORKERNAME="${BUILDBOT_WORKERNAME:-${BUILDBOT_PROJECTNAME}-worker}";
+        WORKERPASS="${BUILDBOT_WORKERPASS:-insecurebydefault}";
+        vecho "Updating default worker credentials for: ${WORKERNAME}";
+        s6-setuidgid ${S6_USER:-alpine} \
+            sed -i \
+            -e "s/\"example-worker\"/\"${WORKERNAME}\"/g" \
+            -e "s/\"pass\"/\"${WORKERPASS}\"/g" \
+            "${BUILDBOT_MASTERNAME}/master.cfg";
+    fi;
+
+    # use custom tacfile, enables stdout logging for docker
+    if [ -n "${BUILDBOT_USE_CUSTOM_TACFILE}" ] \
+    && [ -f "${BUILDBOT_CUSTOM_TACFILE}" ];
+    then
+        vecho "Using custom tacfile for: ${BUILDBOT_MASTERNAME}";
+        s6-setuidgid ${S6_USER:-alpine} \
+            cp "${BUILDBOT_CUSTOM_TACFILE}" "${BUILDBOT_MASTERNAME}/buildbot.tac" \
+        && s6-setuidgid ${S6_USER:-alpine} \
+            chmod 700 "${BUILDBOT_MASTERNAME}/buildbot.tac";
+    fi;
+fi;
+
+# If MASTERCFG is set to a custom cfg, replace buildmaster config
+# with that file. Useful if master.cfg is part of a large project
+# that is mounted somewhere else and needs to be copied into master
+# dir. However, in that case, paths e.g. for builder config/secrets
+# may need to be adjusted accordingly.
+if [ -n "${BUILDBOT_MASTERCFG}" ] \
+&& [ -f "${BUILDBOT_MASTERCFG}" ] \
+&& [ "$(readlink -f ${BUILDBOT_MASTERCFG})" != "$(readlink -f ${BUILDBOT_MASTERNAME}/master.cfg)" ] \
+&& [ "$(readlink -f ${BUILDBOT_MASTERCFG})" != "$(readlink -f ${BUILDBOT_MASTERNAME}/master.cfg.sample)" ] \
+&& [ "$(cat ${BUILDBOT_MASTERCFG})" != "$(cat ${BUILDBOT_MASTERNAME}/master.cfg)" ];  # not the same file, or the sample.cfg file, or same content
+then
+    vecho "Using ${BUILDBOT_MASTERCFG} as ${BUILDBOT_MASTERNAME}/master.cfg";
+    s6-setuidgid ${S6_USER:-alpine} \
+        cp ${BUILDBOT_MASTERCFG} ${BUILDBOT_MASTERNAME}/master.cfg;
+fi;
+
+# pre-tasks for master, these variables accept 'true'/'false', and are unset by default
+
+# check config, enabled before starting by default
+# use with care, might leak config/secret to logs
+if [ "${BUILDBOT_SKIP_CHECKCONFIG^^}" != "TRUE" ];
+then
+    vecho "Checking master config: ${BUILDBOT_MASTERNAME}";
+    s6-setuidgid ${S6_USER:-alpine} \
+        buildbot checkconfig ${BUILDBOT_MASTERNAME}/master.cfg \
+        || exit 1;
+fi;
+
+# upgrade master before start
+if [ "${BUILDBOT_UPGRADE_MASTER^^}" = "TRUE" ];
+then
+    vecho "Upgrading master: ${BUILDBOT_MASTERNAME}";
+    # wait for db to start by trying to upgrade the master
+    until \
+        s6-setuidgid ${S6_USER:-alpine} \
+            buildbot upgrade-master ${BUILDBOT_MASTERNAME};
+    do
+        vecho "Can't upgrade master yet. Waiting for database ready?";
+        sleep 2;
+        vecho "Retrying...";
+    done;
+fi;
+
+# cleanup db before start
+if [ "${BUILDBOT_CLEANUP_DB^^}" = "TRUE" ];
+then
+    vecho "Cleanup db for master: ${BUILDBOT_MASTERNAME}";
+    # wait for db to start by trying to upgrade the master
+    until \
+        s6-setuidgid ${S6_USER:-alpine} \
+            buildbot cleanupdb ${BUILDBOT_MASTERNAME};
+    do
+        vecho "Can't cleanup db yet. Waiting for database ready?";
+        sleep 2;
+        vecho "Retrying...";
+    done;
+fi;

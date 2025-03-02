@@ -1,0 +1,39 @@
+#!/usr/bin/with-contenv bash
+set -e
+
+vecho () { if [ "${S6_VERBOSITY:-1}" -gt 0  ]; then echo "[$0] $@"; fi; }
+
+BUILDBOT_HOME="${BUILDBOT_HOME:-/home/${S6_USER:-alpine}/buildbot}";
+BUILDBOT_PROJECTNAME="${BUILDBOT_PROJECTNAME:-buildbot}";
+BUILDBOT_ARGS="${BUILDBOT_ARGS:- --nodaemon --no_save}";
+
+if [ "${BUILDBOT_ROLE^^}" = "MASTER" ];
+then
+    BUILDBOT_MASTERNAME="${BUILDBOT_MASTERNAME:-${BUILDBOT_PROJECTNAME}-master}";
+    cd ${BUILDBOT_HOME}/${BUILDBOT_MASTERNAME} || exit 1;
+    vecho "Starting master: ${BUILDBOT_MASTERNAME}";
+    # s6-setuidgid ${S6_USER:-alpine} \
+    # exec \
+    #     buildbot start \
+    #     --nodaemon \
+    #     ${BUILDBOT_PROJECTNAME}-master;
+
+elif [ "${BUILDBOT_ROLE^^}" = "WORKER" ];
+then
+    BUILDBOT_WORKERNAME="${BUILDBOT_WORKERNAME:-${BUILDBOT_PROJECTNAME}-worker}";
+    cd ${BUILDBOT_HOME}/${BUILDBOT_WORKERNAME} || exit 1;
+    vecho "Starting worker: ${BUILDBOT_WORKERNAME}";
+    # s6-setuidgid ${S6_USER:-alpine} \
+    # exec \
+    #     buildbot-worker start \
+    #     --nodaemon \
+    #     ${BUILDBOT_PROJECTNAME}-worker;
+
+fi;
+
+# instead of using buildbot/-worker, use twistd to run both as application
+s6-setuidgid ${S6_USER:-alpine} \
+exec \
+    twistd \
+    ${BUILDBOT_ARGS} \
+    -y ./buildbot.tac;
